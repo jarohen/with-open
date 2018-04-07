@@ -1,0 +1,138 @@
+* with-open
+
+A one-macro library to extend the behaviour of Clojure's 'with-open' without
+having to implement =Closeable=.
+
+** Install:
+#+BEGIN_SRC clojure
+  ;; deps.edn
+  {jarohen/with-open {:mvn/version "0.1.0-SNAPSHOT"}
+
+  ;; project.clj
+  [jarohen/with-open "0.1.0-SNAPSHOT"]
+
+  ;; require
+  (:require [jarohen.with-open :refer [with-open+]])
+#+END_SRC
+
+** Rationale
+I like the =with-open= pattern - not only does it ensure that resources get
+closed, it also makes the scope of the resource is visually clear. This is
+particularly important when mixed with Clojure's lazy sequences - in a
+=with-open= block, I know I need to make sure that the result is eagerly
+evaluated - so that I don't try to access the resource after it's closed, or
+fall foul of the dreaded 'ResultSet closed' error!
+
+However, if I want to use =with-open=, the resource has to implement
+=Closeable= - this isn't easy if I want to compose multiple resources together
+into one logical resource, or if I want to augment/adapt an existing resource.
+
+With this in mind, I usually then end up essentially inlining the definition of
+=with-open= - i.e. something like this:
+
+#+BEGIN_SRC clojure
+  ;; if I want to compose multiple Closeables into one 'logical resource'
+  (defn with-multiple-resources [opts f]
+    (with-open [resource1 ...
+                resource2 ...]
+      (f {:resource1 resource1, :resource2 resource2})))
+
+  ;; or, if the resource expects a callback:
+  (defn with-query-results [opts f]
+    (jdbc/query tx ["SELECT * FROM foo"]
+                {:identifiers ...
+                 :row-fn ...
+                 :result-set-fn f}))
+
+  ;; or, if the resource doesn't implement Closeable
+  (defn with-my-resource [resource-opts f]
+    (let [opened-resource (open-my-resource! resource-opts...)]
+      (try
+        (f opened-resource)
+
+        (finally
+          (close-my-resource! opened-resource)))))
+
+  ;; or, if I want to augment the open resource:
+  (defn with-parsed-stream [opts f]
+    (with-open [rdr (io/reader ...)]
+      (f (->> (line-seq rdr)
+              (map parse-line)))))
+
+  ;; and then, when I want to pull those together
+  (defn with-all-those-resources []
+    (with-multiple-resources ...
+      (fn [{:keys [resource1 resource2]}]
+        (with-query-results ...
+          (fn [query-results]
+            (with-parsed-stream ...
+              (fn [parsed-lines]
+                ;; process/transform/etc - with all these callbacks, we're heading off
+                ;; to the right-hand side of the screen quite quickly...
+                )))))))
+#+END_SRC
+
+What I'd rather do is have =with-open= support =with-multiple-resources=,
+=with-my-resource= and =with-parsed-stream=:
+
+#+BEGIN_SRC clojure
+  (defn with-all-those-resources []
+    (with-open+ [{:keys [resource1 resource2]} (with-multiple-resources ...)
+                 query-results (with-query-results ...)
+                 parsed-lines (with-parsed-stream ...)]
+      ;; process/transform etc
+      ))
+#+END_SRC
+
+It might only be half a screen's worth of code to implement this, but I find
+myself using the same half-a-screen in most projects, so it's time to make it a
+library!
+
+** Usage:
+
+=with-open+= is structured in the same way as Clojure's =with-open=, except it
+additionally allows you to use custom resources (i.e. resources that don't
+necessary implement =java.io.Closeable=).
+
+A custom resource might look something like these:
+
+#+BEGIN_SRC clojure
+    (defn with-my-resource [resource-opts]
+      (fn [f]
+        (let [opened-resource (open-my-resource! resource-opts...)]
+          (try
+            (f opened-resource)
+
+            (finally
+              (close-my-resource! opened-resource))))))
+
+    (defn with-parsed-stream [opts]
+      (fn [f]
+        (with-open [rdr (io/reader ...)]
+          (f (->> (line-seq rdr)
+                  (map parse-line))))))
+#+END_SRC
+
+Particularly:
+- We expect to be passed a callback
+- We call that callback with the opened resource
+- We return the result of the callback (although we're free to adapt/augment it if we want)
+- We perform any necessary clean-up
+
+We then use these resources as part of a =with-open+= call:
+
+#+BEGIN_SRC clojure
+    (with-open+ [my-resource (with-my-resource ...)
+                 parsed-lines (with-parsed-stream ...)]
+      ;; use `my-resource` and `parsed-lines` in here, expect them be closed afterwards
+      )
+#+END_SRC
+
+You can also use any resources in =with-open+= that you'd use with Clojure's
+=with-open= - i.e. anything =Closeable=.
+
+** Contributions/changes/thoughts/feedback
+
+Yes please! Feel free to submit these through Github in the usual way.
+
+Thanks!
